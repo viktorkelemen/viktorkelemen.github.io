@@ -27,6 +27,7 @@ const vertexShader = `
   }
 `;
 
+// Shader with per-blob sharpness
 const fragmentShader = `
   precision highp float;
 
@@ -36,42 +37,48 @@ const fragmentShader = `
   uniform vec3 uBlobPositions[${NUM_BLOBS}];
   uniform vec3 uBlobColors[${NUM_BLOBS}];
   uniform float uBlobSizes[${NUM_BLOBS}];
+  uniform float uBlobSharpness[${NUM_BLOBS}];
 
   void main() {
     vec2 uv = vUv;
-    uv.x *= uResolution.x / uResolution.y;
+    float aspect = uResolution.x / uResolution.y;
+    uv.x *= aspect;
 
-    float totalInfluence = 0.0;
     vec3 totalColor = vec3(0.0);
-    float colorWeight = 0.0;
+    float totalAlpha = 0.0;
 
+    // Process each blob separately to allow different sharpness
     for (int i = 0; i < ${NUM_BLOBS}; i++) {
       vec2 blobPos = uBlobPositions[i].xy;
-      blobPos.x *= uResolution.x / uResolution.y;
+      blobPos.x *= aspect;
 
       float dist = distance(uv, blobPos);
       float radius = uBlobSizes[i];
+      float sharpness = uBlobSharpness[i];
 
-      // Metaball influence function
-      float influence = radius * radius / (dist * dist + 0.001);
-      totalInfluence += influence;
+      // Metaball with adjustable falloff
+      // Higher sharpness = harder edge
+      float edge = radius / dist;
 
-      // Color blending weighted by influence
-      float weight = influence * influence;
-      totalColor += uBlobColors[i] * weight;
-      colorWeight += weight;
+      // Sharpness controls the smoothstep range
+      // Sharp (sharpness ~5-10): tight transition
+      // Soft (sharpness ~1-2): gradual blur
+      float threshold = 1.0;
+      float softness = 1.0 / sharpness;
+      float blobAlpha = smoothstep(threshold - softness, threshold + softness * 0.2, edge);
+
+      // Blend color weighted by this blob's alpha
+      totalColor += uBlobColors[i] * blobAlpha;
+      totalAlpha += blobAlpha;
     }
 
-    // Threshold for blob visibility
-    float threshold = 1.0;
-    float edge = smoothstep(threshold - 0.3, threshold + 0.1, totalInfluence);
+    // Normalize and cap
+    if (totalAlpha > 0.0) {
+      totalColor /= totalAlpha;
+    }
+    totalAlpha = min(totalAlpha, 1.0) * 0.55;
 
-    // Normalize color
-    vec3 color = totalColor / (colorWeight + 0.001);
-
-    // Output with transparency
-    float alpha = edge * 0.5;
-    gl_FragColor = vec4(color, alpha);
+    gl_FragColor = vec4(totalColor, totalAlpha);
   }
 `;
 
@@ -82,17 +89,23 @@ interface Blob {
   vy: number;
   size: number;
   color: number[];
+  sharpness: number;
 }
 
 function createBlobs(): Blob[] {
-  return Array.from({ length: NUM_BLOBS }, () => ({
-    x: Math.random(),
-    y: Math.random(),
-    vx: (Math.random() - 0.5) * 0.001,
-    vy: (Math.random() - 0.5) * 0.001,
-    size: 0.03 + Math.random() * 0.05,
-    color: COLORS[Math.floor(Math.random() * COLORS.length)],
-  }));
+  return Array.from({ length: NUM_BLOBS }, () => {
+    // Randomly assign sharpness: some crisp, some soft
+    const isSharp = Math.random() > 0.5;
+    return {
+      x: Math.random(),
+      y: Math.random(),
+      vx: (Math.random() - 0.5) * 0.001,
+      vy: (Math.random() - 0.5) * 0.001,
+      size: 0.03 + Math.random() * 0.05,
+      color: COLORS[Math.floor(Math.random() * COLORS.length)],
+      sharpness: isSharp ? 4 + Math.random() * 4 : 1 + Math.random() * 1.5,
+    };
+  });
 }
 
 export default function FloatingShapes() {
@@ -123,6 +136,7 @@ export default function FloatingShapes() {
       uBlobPositions: { value: blobsRef.current.map(b => new THREE.Vector3(b.x, b.y, 0)) },
       uBlobColors: { value: blobsRef.current.map(b => new THREE.Vector3(...b.color)) },
       uBlobSizes: { value: blobsRef.current.map(b => b.size) },
+      uBlobSharpness: { value: blobsRef.current.map(b => b.sharpness) },
     };
 
     // Fullscreen quad
